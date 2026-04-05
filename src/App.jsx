@@ -63,6 +63,12 @@ const pCol = function(id, prjMap) {
   return COLORS[Math.abs([...id].reduce((a, c) => a + c.charCodeAt(0), 0)) % COLORS.length];
 };
 
+const gSecName = function(sid, sec) {
+  if (sec && sec.name && sec.name !== sid) return sec.name;
+  var found = DEFAULT_SECTIONS.find(function(s) { return s.id === sid; });
+  return found ? found.name : sid;
+};
+
 function fD(d) {
   if (!d) return "";
   const dt = new Date(d + "T00:00:00");
@@ -237,19 +243,19 @@ function useData() {
     });
     if (!isMock) {
       try {
-        await sbf("projects", { method: "POST", headers: Object.assign({}, H, { Prefer: "resolution=merge-duplicates,return=representation" }), body: JSON.stringify({ id: pid, data: nd, updated_at: new Date().toISOString() }) });
+        await fetch(SB + "/rest/v1/projects?on_conflict=id", { method: "POST", headers: Object.assign({}, H, { Prefer: "resolution=merge-duplicates,return=representation" }), body: JSON.stringify({ id: pid, data: nd, updated_at: new Date().toISOString() }) });
       } catch(e) { load(); }
     }
   }, [load, isMock]);
 
-  var addProj = useCallback(async function(name, type, color) {
+  var addProj = useCallback(async function(name, type, color, details) {
     var pid = slug(name);
     if (prj[pid]) throw new Error("Already exists");
     var es = {};
     DEFAULT_SECTIONS.forEach(function(s) { es[s.id] = { name: s.name, tasks: [], consultants: [] }; });
-    var nd = { name: name, type: type || "live", color: color || null, milestones: [], sections: es };
+    var nd = { name: name, type: type || "live", color: color || null, lots: (details && details.lots) || "", grv: (details && details.grv) || "", address: (details && details.address) || "", description: (details && details.description) || "", milestones: [], sections: es };
     setPrj(function(p) { var n = Object.assign({}, p); n[pid] = { id: pid, data: nd, updated_at: new Date().toISOString() }; return n; });
-    if (!isMock) try { await sbf("projects", { method: "POST", body: JSON.stringify({ id: pid, data: nd, updated_at: new Date().toISOString() }) }); } catch(e) { load(); }
+    if (!isMock) try { await fetch(SB + "/rest/v1/projects?on_conflict=id", { method: "POST", headers: Object.assign({}, H, { Prefer: "resolution=merge-duplicates,return=representation" }), body: JSON.stringify({ id: pid, data: nd, updated_at: new Date().toISOString() }) }); } catch(e) { load(); }
     return pid;
   }, [prj, load, isMock]);
 
@@ -343,6 +349,8 @@ function IMsg(p) { return <Ic {...p}><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0
 function IUser(p) { return <Ic {...p}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></Ic>; }
 function IFlag(p) { return <Ic {...p}><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" /><line x1="4" y1="22" x2="4" y2="15" /></Ic>; }
 function IEdit(p) { return <Ic {...p}><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" /></Ic>; }
+function IChevU(p) { return <Ic {...p}><polyline points="18 15 12 9 6 15" /></Ic>; }
+function IMenu(p) { return <Ic {...p}><line x1="4" y1="6" x2="20" y2="6" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="18" x2="20" y2="18" /></Ic>; }
 
 /* Shared Components */
 function Toasts(props) {
@@ -527,14 +535,21 @@ function AddTaskM(props) {
   /* Auto-select project and section for business */
   function onCatChange(newCat) {
     if (newCat === "business") {
-      /* Auto-select business project and its first section */
+      /* Auto-create business project if it doesnt exist */
       var biz = ctx.prj["__business"];
-      var firstSec = "";
-      if (biz && biz.data && biz.data.sections) {
-        var keys = Object.keys(biz.data.sections);
-        if (keys.length > 0) firstSec = keys[0];
+      if (!biz) {
+        var bizSections = { general: { name: "General", tasks: [], consultants: [] } };
+        var bizData = { name: "Business Action Items", type: "business", color: "#4f46e5", milestones: [], sections: bizSections };
+        ctx.upd("__business", bizData);
+        sF(function(x) { return Object.assign({}, x, { cat: newCat, p: "__business", s: "general", con: "" }); });
+      } else {
+        var firstSec = "";
+        if (biz.data && biz.data.sections) {
+          var keys = Object.keys(biz.data.sections);
+          if (keys.length > 0) firstSec = keys[0];
+        }
+        sF(function(x) { return Object.assign({}, x, { cat: newCat, p: "__business", s: firstSec, con: "" }); });
       }
-      sF(function(x) { return Object.assign({}, x, { cat: newCat, p: "__business", s: firstSec, con: "" }); });
     } else {
       sF(function(x) { return Object.assign({}, x, { cat: newCat, p: "", s: "", con: "" }); });
     }
@@ -641,9 +656,16 @@ function EditTaskM(props) {
   function onCatChange(newCat) {
     if (newCat === "business") {
       var biz = ctx.prj["__business"];
-      var firstSec = "";
-      if (biz && biz.data && biz.data.sections) { var keys = Object.keys(biz.data.sections); if (keys.length > 0) firstSec = keys[0]; }
-      sF(function(x) { return Object.assign({}, x, { cat: newCat, p: "__business", s: firstSec, con: "" }); });
+      if (!biz) {
+        var bizSections = { general: { name: "General", tasks: [], consultants: [] } };
+        var bizData = { name: "Business Action Items", type: "business", color: "#4f46e5", milestones: [], sections: bizSections };
+        ctx.upd("__business", bizData);
+        sF(function(x) { return Object.assign({}, x, { cat: newCat, p: "__business", s: "general", con: "" }); });
+      } else {
+        var firstSec = "";
+        if (biz.data && biz.data.sections) { var keys = Object.keys(biz.data.sections); if (keys.length > 0) firstSec = keys[0]; }
+        sF(function(x) { return Object.assign({}, x, { cat: newCat, p: "__business", s: firstSec, con: "" }); });
+      }
     } else {
       sF(function(x) { return Object.assign({}, x, { cat: newCat, p: "", s: "", con: "" }); });
     }
@@ -778,58 +800,78 @@ function ExportModal(props) {
   }
 
   function doExport() {
-    var lines = [];
-    lines.push("SALT PROPERTY DEVELOPMENT"); lines.push("Task Report");
-    lines.push("Generated: " + new Date().toLocaleDateString("en-AU", { weekday: "long", year: "numeric", month: "long", day: "numeric" }));
-    lines.push("=" .repeat(60)); lines.push("");
     var stageIds = {}; STAGES.filter(function(s) { return selStages[s.id]; }).forEach(function(s) { stageIds[s.id] = true; });
     var priIds = {}; PRIS.filter(function(p) { return selPris[p.id]; }).forEach(function(p) { priIds[p.id] = true; });
     var staffIds = {}; TEAM.filter(function(m) { return staff[m.id]; }).forEach(function(m) { staffIds[m.id] = true; });
+    var dateStr = new Date().toLocaleDateString("en-AU", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
     var totalTasks = 0;
+    var h = [];
+    h.push("<!DOCTYPE html><html><head><meta charset='utf-8'><title>SALT Report</title>");
+    h.push("<link href='https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@300;400;500;600;700&display=swap' rel='stylesheet'>");
+    h.push("<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Outfit',sans-serif;color:#1a1f2e;background:#fff;padding:40px;max-width:900px;margin:0 auto}");
+    h.push(".hdr{display:flex;align-items:center;gap:16px;margin-bottom:32px;padding-bottom:16px;border-bottom:2px solid #2563eb}");
+    h.push(".hdr-logo{width:40px;height:40px;background:linear-gradient(135deg,#1e40af,#2563eb);border-radius:10px;display:flex;align-items:center;justify-content:center;color:white;font-family:'DM Serif Display',serif;font-size:18px}");
+    h.push(".hdr-txt{font-family:'DM Serif Display',serif;font-size:24px}.hdr-sub{font-size:12px;color:#8b92a5}");
+    h.push(".proj{margin-bottom:28px;page-break-inside:avoid}.proj-title{font-family:'DM Serif Display',serif;font-size:18px;padding:8px 0 4px;border-left:4px solid var(--pc,#2563eb);padding-left:12px;margin-bottom:12px}");
+    h.push(".sec{margin:12px 0 8px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#5a6278;border-bottom:1px solid #eceef2;padding-bottom:4px}");
+    h.push(".task{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;border-bottom:1px solid #f4f5f7}.task:last-child{border:none}");
+    h.push(".chk{width:12px;height:12px;border:2px solid #d0d3d9;border-radius:3px;flex-shrink:0}.chk-d{background:#059669;border-color:#059669}");
+    h.push(".badge{display:inline-block;padding:1px 6px;border-radius:99px;font-size:9px;font-weight:500;margin-left:4px}");
+    h.push(".b-h{background:#fef2f2;color:#dc2626}.b-m{background:#fffbeb;color:#d97706}.b-l{background:#f1f5f9;color:#94a3b8}");
+    h.push(".b-ip{background:#eff6ff;color:#2563eb}.b-ar{background:#fffbeb;color:#d97706}.b-ns{background:#f1f5f9;color:#94a3b8}.b-done{background:#ecfdf5;color:#059669}.b-oh{background:#fef2f2;color:#dc2626}");
+    h.push(".con{font-size:11px;color:#2563eb;padding:2px 0;margin-left:20px}");
+    h.push(".ms{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px}");
+    h.push(".due{font-size:11px;color:#8b92a5;margin-left:auto;white-space:nowrap}");
+    h.push(".footer{margin-top:40px;padding-top:12px;border-top:1px solid #e2e5ea;font-size:10px;color:#8b92a5;display:flex;justify-content:space-between}");
+    h.push("@media print{body{padding:20px}.proj{page-break-inside:avoid}}</style></head><body>");
+    h.push("<div class='hdr'><div class='hdr-logo'>S</div><div><div class='hdr-txt'>SALT Project Report</div><div class='hdr-sub'>" + dateStr + "</div></div></div>");
+
     projList.filter(function(p) { return selProjs[p.id]; }).forEach(function(proj) {
       var p = prj[proj.id]; if (!p || !p.data) return;
-      lines.push(""); lines.push(">> " + ((p.data.name || proj.id) + " (" + (p.data.type || "live") + ")").toUpperCase()); lines.push("-".repeat(60));
+      var pc = pCol(proj.id, prj);
+      h.push("<div class='proj' style='--pc:" + pc + "'><div class='proj-title'>" + (p.data.name || proj.id) + "</div>");
       if (opts.milestones && p.data.milestones && p.data.milestones.length) {
-        lines.push(""); lines.push("  KEY MILESTONES:");
-        p.data.milestones.forEach(function(m) { lines.push("    " + (m.completed ? "[DONE] " : "[    ] ") + m.name + (m.dueDate ? "  |  Due: " + fD(m.dueDate) : "")); });
+        h.push("<div class='sec'>Key Milestones & Hurdles</div>");
+        p.data.milestones.forEach(function(m) { h.push("<div class='ms'><div class='chk " + (m.completed ? "chk-d" : "") + "'></div><span style='" + (m.completed ? "text-decoration:line-through;color:#8b92a5" : "") + "'>" + m.name + "</span>" + (m.dueDate ? "<span class='due'>" + fD(m.dueDate) + "</span>" : "") + "</div>"); });
       }
       Object.entries(p.data.sections || {}).forEach(function(e) {
         var sid = e[0], sec = e[1];
         var secTasks = (sec.tasks || []).filter(function(t) {
           if (!stageIds[t.stage]) return false; if (!priIds[t.priority]) return false;
-          var tAssignees = getAssignees(t);
-          if (tAssignees.length > 0 && !tAssignees.some(function(a) { return staffIds[a]; })) return false;
-          if (tAssignees.length === 0 && !opts.unassigned) return false; return true;
+          var ta = getAssignees(t);
+          if (ta.length > 0 && !ta.some(function(a) { return staffIds[a]; })) return false;
+          if (ta.length === 0 && !opts.unassigned) return false; return true;
         });
         if (secTasks.length === 0 && !(opts.consultants && sec.consultants && sec.consultants.length)) return;
-        lines.push(""); lines.push("  " + (sec.name || sid)); lines.push("  " + ".".repeat(40));
+        h.push("<div class='sec'>" + gSecName(sid, sec) + "</div>");
         if (opts.consultants && sec.consultants && sec.consultants.length) {
-          sec.consultants.forEach(function(c) { lines.push("    [Consultant] " + c.name + " - " + c.company + (c.phone ? " | " + c.phone : "")); });
+          sec.consultants.forEach(function(c) { h.push("<div class='con'>" + (c.type || "") + ": " + c.name + (c.company ? " (" + c.company + ")" : "") + "</div>"); });
         }
         secTasks.forEach(function(t) {
           totalTasks++;
-          var st = gS(t.stage), pr = gP(t.priority);
-          var memNames = getAssignees(t).map(function(a) { var m = gM(a); return m ? m.name : a; }).join(", ") || "Unassigned";
-          lines.push("    " + (t.stage === "completed" ? "[x]" : "[ ]") + " " + (t.name || "Untitled"));
-          lines.push("        " + st.label + "  |  " + pr.label + "  |  " + memNames + (t.dueDate ? "  |  Due: " + fD(t.dueDate) : ""));
+          var stCls = t.stage === "in-progress" ? "b-ip" : t.stage === "awaiting-response" ? "b-ar" : t.stage === "completed" ? "b-done" : t.stage === "on-hold" ? "b-oh" : "b-ns";
+          var prCls = t.priority === "high" ? "b-h" : t.priority === "medium" ? "b-m" : "b-l";
+          var memNames = getAssignees(t).map(function(a) { var m = gM(a); return m ? m.name.split(" ")[0] : a; }).join(", ");
+          h.push("<div class='task'><div class='chk " + (t.stage === "completed" ? "chk-d" : "") + "'></div><span style='flex:1'>" + (t.name || "Untitled") + "</span><span class='badge " + stCls + "'>" + gS(t.stage).label + "</span><span class='badge " + prCls + "'>" + gP(t.priority).label + "</span>" + (memNames ? "<span style='font-size:11px;color:#5a6278'>" + memNames + "</span>" : "") + (t.dueDate ? "<span class='due'>" + fD(t.dueDate) + "</span>" : "") + "</div>");
         });
       });
+      h.push("</div>");
     });
     if (opts.bizItems && prj["__business"]) {
-      lines.push(""); lines.push(">> BUSINESS ACTION ITEMS"); lines.push("-".repeat(60));
+      h.push("<div class='proj'><div class='proj-title'>Business Action Items</div>");
       Object.entries(prj["__business"].data.sections || {}).forEach(function(e) {
         (e[1].tasks || []).filter(function(t) { var ta = getAssignees(t); return stageIds[t.stage] && priIds[t.priority] && (ta.length === 0 || ta.some(function(a) { return staffIds[a]; })); }).forEach(function(t) {
-          totalTasks++; var st = gS(t.stage);
-          var memNames = getAssignees(t).map(function(a) { var m = gM(a); return m ? m.name : a; }).join(", ") || "Unassigned";
-          lines.push("  " + (t.stage === "completed" ? "[x]" : "[ ]") + " " + t.name);
-          lines.push("      " + st.label + "  |  " + memNames + (t.dueDate ? "  |  Due: " + fD(t.dueDate) : ""));
+          totalTasks++;
+          h.push("<div class='task'><div class='chk " + (t.stage === "completed" ? "chk-d" : "") + "'></div><span style='flex:1'>" + t.name + "</span><span class='due'>" + (t.dueDate ? fD(t.dueDate) : "") + "</span></div>");
         });
       });
+      h.push("</div>");
     }
-    lines.push(""); lines.push("=".repeat(60)); lines.push("Total tasks: " + totalTasks);
-    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    h.push("<div class='footer'><span>SALT Property Development - " + totalTasks + " tasks</span><span>" + dateStr + "</span></div>");
+    h.push("</body></html>");
+    var blob = new Blob([h.join("")], { type: "text/html" });
     var a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-    a.download = "SALT-Report-" + new Date().toISOString().split("T")[0] + ".txt"; a.click();
+    a.download = "SALT-Report-" + new Date().toISOString().split("T")[0] + ".html"; a.click();
     ctx.toast("Report downloaded"); props.onClose();
   }
 
@@ -862,7 +904,7 @@ function ExportModal(props) {
       {PRIS.map(function(p) { return <div key={p.id} onClick={function() { setSelPris(function(prev) { var n = Object.assign({}, prev); n[p.id] = !prev[p.id]; return n; }); }} style={cr}><input type="checkbox" checked={!!selPris[p.id]} readOnly style={cb} /><div style={{ width: 7, height: 7, borderRadius: "50%", background: p.color }} /><span>{p.label}</span></div>; })}
 
       <label style={secLbl}>Additional</label>
-      {[{ k: "milestones", l: "Key Milestones" }, { k: "consultants", l: "Consultant Details" }, { k: "unassigned", l: "Unassigned Tasks" }, { k: "bizItems", l: "Business Action Items" }].map(function(o) {
+      {[{ k: "milestones", l: "Key Milestones & Hurdles" }, { k: "consultants", l: "Consultant Details" }, { k: "unassigned", l: "Unassigned Tasks" }, { k: "bizItems", l: "Business Action Items" }].map(function(o) {
         return <div key={o.k} onClick={function() { setOpts(function(prev) { var n = Object.assign({}, prev); n[o.k] = !prev[o.k]; return n; }); }} style={cr}><input type="checkbox" checked={!!opts[o.k]} readOnly style={cb} /><span>{o.l}</span></div>;
       })}
     </Modal>
@@ -953,6 +995,30 @@ function Dash() {
           <button style={sBG} onClick={function() { setPersonFilter(null); }}>Clear</button>
         </div>
       )}
+
+      {/* Upcoming Deadlines */}
+      {(function() {
+        var upcoming = at.filter(function(t) { return t.dueDate && t.stage !== "completed"; }).sort(function(a, b) { return new Date(a.dueDate) - new Date(b.dueDate); }).slice(0, 5);
+        if (upcoming.length === 0) return null;
+        return (
+          <div style={{ marginBottom: 20 }}>
+            <h2 style={{ fontFamily: fontDi, fontSize: 16, color: S.t1, marginBottom: 8 }}>Upcoming Deadlines</h2>
+            {upcoming.map(function(t) {
+              var late = isOD(t.dueDate, t.stage);
+              var pc = pCol(t.projectId, ctx.prj);
+              return (
+                <div key={t.projectId + t.id} onClick={function() { setEditing(t); }} style={Object.assign({}, sCard, { padding: "8px 12px", marginBottom: 4, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", borderLeft: "3px solid " + (late ? S.err : pc) })}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: S.t1 }}>{t.name}</div>
+                    <div style={{ fontSize: 11, color: S.t3 }}>{t.projectName}</div>
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: late ? S.err : S.t2 }}>{late ? "\u26A0 " : ""}{fD(t.dueDate)}</span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {filtered.length === 0 ? (
         <div style={{ textAlign: "center", padding: 48, color: S.t3 }}>
@@ -1058,12 +1124,16 @@ function AddProjModal(props) {
   var nmRef = useState(""); var nm = nmRef[0], setNm = nmRef[1];
   var tpRef = useState("live"); var tp = tpRef[0], setTp = tpRef[1];
   var clrRef = useState(COLORS[0]); var clr = clrRef[0], setClr = clrRef[1];
+  var lotsRef = useState(""); var lots = lotsRef[0], setLots = lotsRef[1];
+  var grvRef = useState(""); var grv = grvRef[0], setGrv = grvRef[1];
+  var addrRef = useState(""); var addr = addrRef[0], setAddr = addrRef[1];
+  var descRef = useState(""); var desc = descRef[0], setDesc = descRef[1];
   var savRef = useState(false); var sav = savRef[0], setSav = savRef[1];
   var iRef = useRef(null);
 
   useEffect(function() {
     if (props.open) {
-      setNm("");
+      setNm(""); setLots(""); setGrv(""); setAddr(""); setDesc("");
       setTp(props.defType || "live");
       setClr(COLORS[Math.floor(Math.random() * COLORS.length)]);
       setTimeout(function() { if (iRef.current) iRef.current.focus(); }, 300);
@@ -1075,13 +1145,19 @@ function AddProjModal(props) {
   var sub = function() {
     if (!nm.trim()) return;
     setSav(true);
-    ctx.addProj(nm.trim(), tp, clr).then(function() { ctx.toast("Created"); props.onClose(); }).catch(function(e) { ctx.toast(e.message || "Failed", "err"); }).finally(function() { setSav(false); });
+    ctx.addProj(nm.trim(), tp, clr, { lots: lots, grv: grv, address: addr, description: desc }).then(function() { ctx.toast("Created"); props.onClose(); }).catch(function(e) { ctx.toast(e.message || "Failed", "err"); }).finally(function() { setSav(false); });
   };
 
   return (
     <Modal open={props.open} onClose={props.onClose} title="New Project"
       footer={<><button style={Object.assign({}, sBS, { flex: 1 })} onClick={props.onClose}>Cancel</button><button style={Object.assign({}, sBP, { flex: 2, opacity: nm.trim() ? 1 : 0.4 })} onClick={sub} disabled={sav || !nm.trim()}>{sav ? "Creating..." : "Create"}</button></>}>
       <div style={{ marginBottom: 12 }}><label style={lblS}>Project Name</label><input ref={iRef} style={sInput} placeholder="e.g. 123 Main Street" value={nm} onChange={function(e) { setNm(e.target.value); }} onKeyDown={function(e) { if (e.key === "Enter") sub(); }} /></div>
+      <div style={{ marginBottom: 12 }}><label style={lblS}>Address</label><input style={sInput} placeholder="Full street address" value={addr} onChange={function(e) { setAddr(e.target.value); }} /></div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div style={{ marginBottom: 12 }}><label style={lblS}>Number of Lots</label><input style={sInput} placeholder="e.g. 12" value={lots} onChange={function(e) { setLots(e.target.value); }} /></div>
+        <div style={{ marginBottom: 12 }}><label style={lblS}>GRV</label><input style={sInput} placeholder="e.g. $4.2M" value={grv} onChange={function(e) { setGrv(e.target.value); }} /></div>
+      </div>
+      <div style={{ marginBottom: 12 }}><label style={lblS}>Description</label><textarea style={Object.assign({}, sInput, { minHeight: 60, resize: "vertical" })} placeholder="Brief project description..." value={desc} onChange={function(e) { setDesc(e.target.value); }} /></div>
       <div style={{ marginBottom: 12 }}><label style={lblS}>Type</label><select style={sInput} value={tp} onChange={function(e) { setTp(e.target.value); }}><option value="live">Live Project</option><option value="acquisition">Acquisition</option></select></div>
       <div style={{ marginBottom: 12 }}>
         <label style={lblS}>Project Colour</label>
@@ -1091,11 +1167,6 @@ function AddProjModal(props) {
             return <button key={cc} onClick={function() { setClr(cc); }} style={{ width: 32, height: 32, borderRadius: "50%", background: cc, border: sel ? "2px solid " + S.t1 : "2px solid transparent", boxShadow: sel ? "0 0 0 2px " + cc + "40" : "none", cursor: "pointer", transition: "all .15s" }} />;
           })}
         </div>
-      </div>
-      <div style={{ padding: 12, background: S.input, borderRadius: 8, display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ width: 4, height: 24, borderRadius: 2, background: clr }} />
-        <span style={{ fontFamily: fontDi, fontSize: 15, color: S.t1 }}>{nm || "Project Name"}</span>
-        <span style={{ fontSize: 10, color: S.t3, marginLeft: "auto" }}>{tp}</span>
       </div>
     </Modal>
   );
@@ -1108,6 +1179,7 @@ function Projects(props) {
   var tabRef = useState("live"); var tab = tabRef[0], setTab = tabRef[1];
   var editRef = useState(null); var editing = editRef[0], setEditing = editRef[1];
   var addRef = useState(false); var showBizAdd = addRef[0], setShowBizAdd = addRef[1];
+  var searchRef = useState(""); var search = searchRef[0], setSearch = searchRef[1];
 
   var cards = useMemo(function() {
     return Object.entries(prj).filter(function(e) { return e[0] !== "__business"; }).map(function(e) {
@@ -1126,8 +1198,8 @@ function Projects(props) {
     return t;
   }, [bizProj]);
 
-  var live = cards.filter(function(c) { return c.type === "live"; });
-  var acq = cards.filter(function(c) { return c.type === "acquisition"; });
+  var live = cards.filter(function(c) { return c.type === "live" && (!search || c.name.toLowerCase().indexOf(search.toLowerCase()) >= 0); });
+  var acq = cards.filter(function(c) { return c.type === "acquisition" && (!search || c.name.toLowerCase().indexOf(search.toLowerCase()) >= 0); });
 
   if (loading) return <div style={{ display: "flex", justifyContent: "center", padding: 48 }}><div style={{ width: 28, height: 28, border: "3px solid " + S.brdL, borderTopColor: S.blue, borderRadius: "50%", animation: "saltSpin .8s linear infinite" }} /></div>;
 
@@ -1144,7 +1216,9 @@ function Projects(props) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6, textAlign: "center" }}>
           <div><div style={{ fontSize: 16, fontWeight: 600, color: S.t1 }}>{p.total}</div><div style={{ fontSize: 10, color: S.t3, textTransform: "uppercase" }}>Total</div></div>
           <div><div style={{ fontSize: 16, fontWeight: 600, color: S.info }}>{p.ip}</div><div style={{ fontSize: 10, color: S.t3, textTransform: "uppercase" }}>Active</div></div>
-          <div><div style={{ fontSize: 16, fontWeight: 600, color: p.od > 0 ? S.err : S.ok }}>{p.od > 0 ? p.od : p.done}</div><div style={{ fontSize: 10, color: S.t3, textTransform: "uppercase" }}>{p.od > 0 ? "Overdue" : "Done"}</div></div>
+          {p.od > 0 && <div><div style={{ fontSize: 16, fontWeight: 600, color: S.err }}>{p.od}</div><div style={{ fontSize: 10, color: S.err, textTransform: "uppercase" }}>Overdue</div></div>}
+          <div><div style={{ fontSize: 16, fontWeight: 600, color: S.ok }}>{p.done}</div><div style={{ fontSize: 10, color: S.t3, textTransform: "uppercase" }}>Done</div></div>
+          {p.od > 0 && <div><div style={{ fontSize: 16, fontWeight: 600, color: S.err }}>{p.od}</div><div style={{ fontSize: 10, color: S.err, textTransform: "uppercase" }}>Overdue</div></div>}
         </div>
         <div style={{ width: "100%", height: 3, background: S.input, borderRadius: 99, overflow: "hidden", marginTop: 10 }}><div style={{ height: "100%", borderRadius: 99, background: S.ok, width: pct + "%" }} /></div>
       </div>
@@ -1156,7 +1230,11 @@ function Projects(props) {
       {isMock && <div style={{ padding: "8px 12px", background: S.infoBg, border: "1px solid #bfdbfe", borderRadius: 8, marginBottom: 14, fontSize: 12, color: S.blue }}>Preview mode</div>}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
         <h1 style={{ fontFamily: fontDi, fontSize: 26, fontWeight: 400, color: S.t1 }}>Projects</h1>
-        <button style={sBP} onClick={function() { setShowAP(true); }}><IPlus s={14} /> New</button>
+        <button style={Object.assign({}, sBP, { minHeight: 40 })} onClick={function() { setShowAP(true); }}><IPlus s={14} /> New Project</button>
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <input style={Object.assign({}, sInput, { minHeight: 38, fontSize: 13 })} placeholder="Search projects..." value={search} onChange={function(e) { setSearch(e.target.value); }} />
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
@@ -1199,6 +1277,7 @@ function ProjDetail(props) {
   var sfRef = useState("all"); var sf = sfRef[0], setSf = sfRef[1];
   var addSecRef = useState(false); var showAddSec = addSecRef[0], setShowAddSec = addSecRef[1];
   var msRef = useState(false); var showAddMs = msRef[0], setShowAddMs = msRef[1];
+  var editMsRef = useState(null); var editMs = editMsRef[0], setEditMs = editMsRef[1];
   var conRef = useState(null); var showAddCon = conRef[0], setShowAddCon = conRef[1];
 
   useEffect(function() { if (pd && pd.data && pd.data.sections) setExp(new Set(Object.keys(pd.data.sections))); }, [pid]);
@@ -1241,6 +1320,28 @@ function ProjDetail(props) {
     ctx.toast("Removed");
   }
 
+  function getSectionOrder() {
+    if (pd.data && pd.data.sectionOrder && Array.isArray(pd.data.sectionOrder)) return pd.data.sectionOrder;
+    var entries = Object.keys((pd.data && pd.data.sections) || {});
+    var orderMap = {}; DEFAULT_SECTIONS.forEach(function(s, i) { orderMap[s.id] = i; });
+    entries.sort(function(a, b) { return (orderMap[a] !== undefined ? orderMap[a] : 99) - (orderMap[b] !== undefined ? orderMap[b] : 99); });
+    return entries;
+  }
+
+  function moveSection(sid, direction) {
+    var order = getSectionOrder();
+    var idx = order.indexOf(sid);
+    if (idx < 0) return;
+    var newIdx = idx + direction;
+    if (newIdx < 0 || newIdx >= order.length) return;
+    var newOrder = order.slice();
+    newOrder.splice(idx, 1);
+    newOrder.splice(newIdx, 0, sid);
+    var d = JSON.parse(JSON.stringify(pd.data));
+    d.sectionOrder = newOrder;
+    ctx.upd(pid, d);
+  }
+
   function addMilestone() {
     var nEl = document.getElementById("ms-name");
     var dEl = document.getElementById("ms-date");
@@ -1257,6 +1358,20 @@ function ProjDetail(props) {
     var d = JSON.parse(JSON.stringify(pd.data));
     var m = (d.milestones || []).find(function(x) { return x.id === msId; });
     if (m) { m.completed = !m.completed; ctx.upd(pid, d); }
+  }
+
+  function deleteMs(msId) {
+    var d = JSON.parse(JSON.stringify(pd.data));
+    d.milestones = (d.milestones || []).filter(function(x) { return x.id !== msId; });
+    ctx.upd(pid, d);
+    ctx.toast("Milestone deleted");
+  }
+
+  function updateMs(msId, updates) {
+    var d = JSON.parse(JSON.stringify(pd.data));
+    var m = (d.milestones || []).find(function(x) { return x.id === msId; });
+    if (m) { Object.assign(m, updates); ctx.upd(pid, d); ctx.toast("Milestone updated"); }
+    setEditMs(null);
   }
 
   function addConsultant() {
@@ -1305,37 +1420,80 @@ function ProjDetail(props) {
   }
 
   function exportReport() {
-    var lines = [];
-    lines.push("SALT PROJECT REPORT");
-    lines.push("=".repeat(50));
-    lines.push((pd.data && pd.data.name) || pid);
-    lines.push("Generated: " + new Date().toLocaleDateString("en-AU"));
-    lines.push("");
-    if (milestones.length) {
-      lines.push("KEY MILESTONES");
-      lines.push("-".repeat(40));
-      milestones.forEach(function(m) { lines.push((m.completed ? "[x] " : "[ ] ") + m.name + (m.dueDate ? " - Due: " + fD(m.dueDate) : "")); });
-      lines.push("");
+    var projName = (pd.data && pd.data.name) || pid;
+    var projColor = pCol(pid, ctx.prj);
+    var dateStr = new Date().toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" });
+    var html = [];
+    html.push("<!DOCTYPE html><html><head><meta charset='utf-8'><title>" + projName + " - Report</title>");
+    html.push("<link href='https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@300;400;500;600;700&display=swap' rel='stylesheet'>");
+    html.push("<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Outfit',sans-serif;color:#1a1f2e;background:#fff;padding:40px;max-width:800px;margin:0 auto}");
+    html.push(".header{border-left:4px solid " + projColor + ";padding-left:16px;margin-bottom:32px}.title{font-family:'DM Serif Display',serif;font-size:28px;margin-bottom:4px}.sub{color:#8b92a5;font-size:13px}");
+    html.push(".info{display:flex;gap:20px;margin-bottom:24px;flex-wrap:wrap}.info-item{font-size:12px;color:#5a6278}.info-item strong{color:#1a1f2e}");
+    html.push(".section{margin-bottom:24px}.sec-title{font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#5a6278;padding:8px 0;border-bottom:2px solid #e2e5ea;margin-bottom:12px}");
+    html.push(".milestone{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px}.ms-check{width:14px;height:14px;border:2px solid #d0d3d9;border-radius:3px;flex-shrink:0}.ms-done{background:#059669;border-color:#059669}");
+    html.push(".con{padding:8px 12px;background:#eff6ff;border-radius:6px;margin-bottom:6px;font-size:12px;border-left:2px solid #2563eb}.con-type{font-weight:600;color:#2563eb}");
+    html.push(".task{display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid #f4f5f7;font-size:13px}.task:last-child{border-bottom:none}");
+    html.push(".badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:10px;font-weight:500;margin-right:4px}");
+    html.push(".b-ip{background:#eff6ff;color:#2563eb}.b-ar{background:#fffbeb;color:#d97706}.b-ns{background:#f1f5f9;color:#94a3b8}.b-done{background:#ecfdf5;color:#059669}.b-oh{background:#fef2f2;color:#dc2626}");
+    html.push(".b-high{background:#fef2f2;color:#dc2626}.b-med{background:#fffbeb;color:#d97706}.b-low{background:#f1f5f9;color:#94a3b8}");
+    html.push(".footer{margin-top:40px;padding-top:16px;border-top:1px solid #e2e5ea;font-size:11px;color:#8b92a5;display:flex;justify-content:space-between}");
+    html.push("@media print{body{padding:20px}}</style></head><body>");
+    html.push("<div class='header'><div class='title'>" + projName + "</div><div class='sub'>Project Report - " + dateStr + "</div></div>");
+    
+    // Project info
+    if (pd.data.address || pd.data.lots || pd.data.grv) {
+      html.push("<div class='info'>");
+      if (pd.data.address) html.push("<div class='info-item'>Address: <strong>" + pd.data.address + "</strong></div>");
+      if (pd.data.lots) html.push("<div class='info-item'>Lots: <strong>" + pd.data.lots + "</strong></div>");
+      if (pd.data.grv) html.push("<div class='info-item'>GRV: <strong>" + pd.data.grv + "</strong></div>");
+      html.push("</div>");
     }
-    Object.entries(pd.data.sections || {}).forEach(function(e) {
-      var sid = e[0], sec = e[1];
-      lines.push((sec.name || sid).toUpperCase());
-      lines.push("-".repeat(40));
-      if (sec.consultants && sec.consultants.length) {
-        sec.consultants.forEach(function(c) { lines.push("  Consultant: " + c.name + " (" + c.company + ") " + (c.phone || "")); });
-      }
-      (sec.tasks || []).forEach(function(t) {
-        var st = gS(t.stage), pr = gP(t.priority);
-        var memNames = getAssignees(t).map(function(a) { var m = gM(a); return m ? m.name : a; }).join(", ") || "Unassigned";
-        lines.push("  " + (t.stage === "completed" ? "[x]" : "[ ]") + " " + (t.name || "Untitled"));
-        lines.push("      " + st.label + " | " + pr.label + " | " + memNames + (t.dueDate ? " | " + fD(t.dueDate) : ""));
+    
+    // Stats summary
+    html.push("<div class='info'><div class='info-item'>Total Tasks: <strong>" + stats.total + "</strong></div><div class='info-item'>Active: <strong>" + stats.ip + "</strong></div><div class='info-item'>Overdue: <strong style=\"color:#dc2626\">" + stats.od + "</strong></div><div class='info-item'>Completed: <strong>" + stats.done + "</strong></div></div>");
+    
+    // Milestones
+    if (milestones.length) {
+      html.push("<div class='section'><div class='sec-title'>Key Milestones & Hurdles</div>");
+      milestones.forEach(function(m) {
+        html.push("<div class='milestone'><div class='ms-check " + (m.completed ? "ms-done" : "") + "'></div><span style='" + (m.completed ? "text-decoration:line-through;color:#8b92a5" : "") + "'>" + m.name + "</span>" + (m.dueDate ? "<span style='margin-left:auto;font-size:11px;color:#8b92a5'>" + fD(m.dueDate) + "</span>" : "") + "</div>");
       });
-      lines.push("");
+      html.push("</div>");
+    }
+    
+    // Sections
+    var secOrder = {}; DEFAULT_SECTIONS.forEach(function(s, i) { secOrder[s.id] = i; });
+    var sortedSecs = Object.entries(pd.data.sections || {}).sort(function(a, b) { return (secOrder[a[0]] || 99) - (secOrder[b[0]] || 99); });
+    
+    sortedSecs.forEach(function(e) {
+      var sid = e[0], sec = e[1];
+      var tasks = sec.tasks || [];
+      if (tasks.length === 0 && (!sec.consultants || sec.consultants.length === 0)) return;
+      html.push("<div class='section'><div class='sec-title'>" + gSecName(sid, sec) + " (" + tasks.length + " tasks)</div>");
+      
+      if (sec.consultants && sec.consultants.length) {
+        sec.consultants.forEach(function(c) {
+          html.push("<div class='con'><span class='con-type'>" + (c.type || "Consultant") + "</span> - " + c.name + (c.company ? " (" + c.company + ")" : "") + (c.phone ? " | " + c.phone : "") + "</div>");
+        });
+      }
+      
+      tasks.forEach(function(t) {
+        var st = gS(t.stage), pr = gP(t.priority);
+        var stClass = t.stage === "in-progress" ? "b-ip" : t.stage === "awaiting-response" ? "b-ar" : t.stage === "completed" ? "b-done" : t.stage === "on-hold" ? "b-oh" : "b-ns";
+        var prClass = t.priority === "high" ? "b-high" : t.priority === "medium" ? "b-med" : "b-low";
+        var memNames = getAssignees(t).map(function(a) { var m = gM(a); return m ? m.name : a; }).join(", ") || "Unassigned";
+        html.push("<div class='task'><div style='flex:1'><div>" + (t.name || "Untitled") + "</div><div style='margin-top:2px'><span class='badge " + stClass + "'>" + st.label + "</span><span class='badge " + prClass + "'>" + pr.label + "</span><span style='font-size:11px;color:#8b92a5'>" + memNames + "</span></div></div>" + (t.dueDate ? "<div style='font-size:11px;color:" + (isOD(t.dueDate, t.stage) ? "#dc2626;font-weight:600" : "#8b92a5") + ";white-space:nowrap'>" + fD(t.dueDate) + "</div>" : "") + "</div>");
+      });
+      html.push("</div>");
     });
-    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    
+    html.push("<div class='footer'><span>SALT Property Development</span><span>" + dateStr + "</span></div>");
+    html.push("</body></html>");
+    
+    var blob = new Blob([html.join("")], { type: "text/html" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = ((pd.data && pd.data.name) || "project") + "-report.txt";
+    a.download = ((pd.data && pd.data.name) || "project") + "-report.html";
     a.click();
   }
 
@@ -1346,7 +1504,33 @@ function ProjDetail(props) {
         <button style={sBG} onClick={props.onBack}><IChevL s={14} /> Projects</button>
         <button style={sBG} onClick={exportReport}><IFile s={14} /> Export</button>
       </div>
-      <h1 style={{ fontFamily: fontDi, fontSize: 24, fontWeight: 400, color: S.t1, borderLeft: "3px solid " + pCol(pid, ctx.prj), paddingLeft: 10, marginBottom: 16 }}>{(pd.data && pd.data.name) || pid}</h1>
+      <h1 style={{ fontFamily: fontDi, fontSize: 24, fontWeight: 400, color: S.t1, borderLeft: "3px solid " + pCol(pid, ctx.prj), paddingLeft: 10, marginBottom: 6 }}>{(pd.data && pd.data.name) || pid}</h1>
+
+      {/* Project Details */}
+      {(pd.data.address || pd.data.lots || pd.data.grv || pd.data.description) && (
+        <div style={{ marginBottom: 16, paddingLeft: 13 }}>
+          {pd.data.address && <div style={{ fontSize: 12, color: S.t2, marginBottom: 2 }}>{pd.data.address}</div>}
+          <div style={{ display: "flex", gap: 12, marginBottom: pd.data.description ? 4 : 0 }}>
+            {pd.data.lots && <span style={{ fontSize: 11, color: S.t3 }}>Lots: <strong style={{ color: S.t1 }}>{pd.data.lots}</strong></span>}
+            {pd.data.grv && <span style={{ fontSize: 11, color: S.t3 }}>GRV: <strong style={{ color: S.t1 }}>{pd.data.grv}</strong></span>}
+          </div>
+          {pd.data.description && <div style={{ fontSize: 12, color: S.t3, fontStyle: "italic" }}>{pd.data.description}</div>}
+        </div>
+      )}
+
+      {/* Project Details */}
+      {(pd.data.address || pd.data.lots || pd.data.grv || pd.data.description) && (
+        <div style={Object.assign({}, sCard, { padding: 14, marginBottom: 16 })}>
+          {pd.data.address && <div style={{ fontSize: 13, color: S.t2, marginBottom: 4 }}>{pd.data.address}</div>}
+          {(pd.data.lots || pd.data.grv) && (
+            <div style={{ display: "flex", gap: 16, marginBottom: pd.data.description ? 8 : 0 }}>
+              {pd.data.lots && <div><span style={{ fontSize: 10, color: S.t3, textTransform: "uppercase" }}>Lots: </span><span style={{ fontSize: 13, fontWeight: 600, color: S.t1 }}>{pd.data.lots}</span></div>}
+              {pd.data.grv && <div><span style={{ fontSize: 10, color: S.t3, textTransform: "uppercase" }}>GRV: </span><span style={{ fontSize: 13, fontWeight: 600, color: S.t1 }}>{pd.data.grv}</span></div>}
+            </div>
+          )}
+          {pd.data.description && <div style={{ fontSize: 12, color: S.t2, lineHeight: 1.5 }}>{pd.data.description}</div>}
+        </div>
+      )}
 
       {/* Stats */}
       <div style={{ display: "flex", gap: 8, overflowX: "auto", marginBottom: 16 }}>
@@ -1358,7 +1542,7 @@ function ProjDetail(props) {
       {/* Milestones */}
       <div style={Object.assign({}, sCard, { padding: 14, marginBottom: 16 })}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: milestones.length ? 8 : 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}><IFlag s={14} style={{ color: S.blue }} /><span style={{ fontFamily: fontDi, fontSize: 15, color: S.t1 }}>Key Milestones</span></div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}><IFlag s={14} style={{ color: S.blue }} /><span style={{ fontFamily: fontDi, fontSize: 15, color: S.t1 }}>Key Milestones & Hurdles</span></div>
           <button style={sBG} onClick={function() { setShowAddMs(true); }}><IPlus s={12} /> Add</button>
         </div>
         {milestones.map(function(m) {
@@ -1366,6 +1550,8 @@ function ProjDetail(props) {
             <input type="checkbox" checked={m.completed} onChange={function() { toggleMs(m.id); }} style={{ width: 18, height: 18, accentColor: S.blue }} />
             <span style={{ flex: 1, fontSize: 13, color: m.completed ? S.t3 : S.t1, textDecoration: m.completed ? "line-through" : "none" }}>{m.name}</span>
             {m.dueDate && <span style={{ fontSize: 11, color: isOD(m.dueDate, m.completed ? "completed" : "") ? S.err : S.t3 }}>{fD(m.dueDate)}</span>}
+            <button onClick={function() { setEditMs(m); }} style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: S.t3, display: "flex", opacity: 0.4 }}><IEdit s={11} /></button>
+            <button onClick={function() { deleteMs(m.id); }} style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: S.t3, display: "flex", opacity: 0.4 }}><ITrash s={11} /></button>
           </div>;
         })}
       </div>
@@ -1377,9 +1563,18 @@ function ProjDetail(props) {
         })}
       </div>
 
-      {/* Sections */}
-      {Object.entries((pd.data && pd.data.sections) || {}).map(function(e) {
-        var sid = e[0], sec = e[1];
+      {/* Sections - sorted by custom order */}
+      {(function() {
+        var order = getSectionOrder();
+        var sections = (pd.data && pd.data.sections) || {};
+        /* Include any sections not in the order array */
+        Object.keys(sections).forEach(function(sid) { if (order.indexOf(sid) < 0) order.push(sid); });
+        return order.filter(function(sid) { return sections[sid]; }).map(function(sid, idx, arr) {
+          var sec = sections[sid];
+          return { sid: sid, sec: sec, idx: idx, total: arr.length };
+        });
+      })().map(function(item) {
+        var sid = item.sid, sec = item.sec;
         var tasks = (sec.tasks || []).map(function(t) { return Object.assign({}, t, { projectId: pid, sectionId: sid, projectName: (pd.data && pd.data.name) || pid }); });
         if (sf !== "all") tasks = tasks.filter(function(t) { return t.stage === sf; });
         var sorted = srt(tasks);
@@ -1389,8 +1584,12 @@ function ProjDetail(props) {
         return (
           <div key={sid} style={{ marginBottom: 12 }}>
             <div onClick={function() { setExp(function(p) { var n = new Set(p); if (n.has(sid)) n.delete(sid); else n.add(sid); return n; }); }}
-              style={Object.assign({}, sCard, { display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", minHeight: 44 })}>
-              <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: S.t1 }}>{sec.name || sid}</span>
+              style={Object.assign({}, sCard, { display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", cursor: "pointer", minHeight: 44 })}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 0, opacity: 0.35 }}>
+                <button style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: S.t3, lineHeight: 0, display: item.idx === 0 ? "none" : "block" }} onClick={function(ev) { ev.stopPropagation(); moveSection(sid, -1); }}><IChevU s={12} /></button>
+                <button style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: S.t3, lineHeight: 0, display: item.idx === item.total - 1 ? "none" : "block" }} onClick={function(ev) { ev.stopPropagation(); moveSection(sid, 1); }}><IChevD s={12} /></button>
+              </div>
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: S.t1 }}>{gSecName(sid, sec)}</span>
               <span style={{ fontSize: 11, color: S.t3, background: S.input, padding: "1px 7px", borderRadius: 99 }}>{(sec.tasks || []).length}</span>
               <button style={Object.assign({}, sBG, { padding: "2px 4px", minHeight: 24, opacity: 0.4 })} onClick={function(ev) { ev.stopPropagation(); delSection(sid); }}><ITrash s={12} /></button>
               <IChevD s={14} style={{ color: S.t3, transition: "transform .2s", transform: open ? "rotate(180deg)" : "none" }} />
@@ -1452,6 +1651,8 @@ function ProjDetail(props) {
         <div style={{ marginBottom: 10 }}><label style={lblS}>Target Date</label><input id="ms-date" style={sInput} type="date" /></div>
       </Modal>
 
+      {editMs && <EditMsModal ms={editMs} onClose={function() { setEditMs(null); }} onSave={updateMs} onDelete={deleteMs} />}
+
       <Modal open={!!showAddCon} onClose={function() { setShowAddCon(null); }} title="Add Consultant"
         footer={<><button style={Object.assign({}, sBS, { flex: 1 })} onClick={function() { setShowAddCon(null); }}>Cancel</button><button style={Object.assign({}, sBP, { flex: 2 })} onClick={addConsultant}>Add</button></>}>
         <div style={{ marginBottom: 10 }}><label style={lblS}>Type of Consultant</label><input id="con-type" style={sInput} placeholder="e.g. Town Planner, Solicitor, Architect" /></div>
@@ -1463,6 +1664,26 @@ function ProjDetail(props) {
         </div>
       </Modal>
     </div>
+  );
+}
+
+/* Edit Milestone Modal */
+function EditMsModal(props) {
+  var nmRef = useState(props.ms.name || ""); var nm = nmRef[0], setNm = nmRef[1];
+  var dtRef = useState(props.ms.dueDate || ""); var dt = dtRef[0], setDt = dtRef[1];
+  return (
+    <Modal open={true} onClose={props.onClose} title="Edit Milestone"
+      footer={
+        <>
+          <button style={sBD} onClick={function() { props.onDelete(props.ms.id); props.onClose(); }}><ITrash s={14} /></button>
+          <div style={{ flex: 1 }} />
+          <button style={sBS} onClick={props.onClose}>Cancel</button>
+          <button style={sBP} onClick={function() { props.onSave(props.ms.id, { name: nm.trim(), dueDate: dt || null }); }}>Save</button>
+        </>
+      }>
+      <div style={{ marginBottom: 10 }}><label style={lblS}>Milestone</label><input style={sInput} value={nm} onChange={function(e) { setNm(e.target.value); }} /></div>
+      <div style={{ marginBottom: 10 }}><label style={lblS}>Target Date</label><input style={sInput} type="date" value={dt} onChange={function(e) { setDt(e.target.value); }} /></div>
+    </Modal>
   );
 }
 
@@ -1622,8 +1843,13 @@ export default function App() {
       <div style={{ background: "#f4f5f7", minHeight: "100vh", color: S.t1, fontFamily: fontBo, display: "flex", flexDirection: "column" }}>
         <aside className="salt-sb" style={{ display: "none", position: "fixed", left: 0, top: 0, bottom: 0, width: 220, background: "white", borderRight: "1px solid " + S.brdL, zIndex: 100, padding: 16, flexDirection: "column", boxShadow: "1px 0 8px rgba(0,0,0,.04)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, marginBottom: 28, cursor: "pointer" }} onClick={function() { go("dash"); }}>
-            <div style={{ width: 30, height: 30, background: "linear-gradient(135deg,#2563eb,#1d4ed8)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: fontDi, fontSize: 15, color: "white" }}>S</div>
-            <span style={{ fontFamily: fontDi, fontSize: 17, letterSpacing: ".08em", color: S.t1 }}>SALT</span>
+            <div style={{ width: 34, height: 34, background: "linear-gradient(135deg,#1e40af,#2563eb,#3b82f6)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(37,99,235,0.3)" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 21V3h18v18H3z" stroke="white" strokeWidth="2" fill="none"/><path d="M7 17V7h4l3 5-3 5H7z" fill="white" opacity="0.9"/><path d="M14 7h3v10h-3" stroke="white" strokeWidth="2" fill="none"/></svg>
+            </div>
+            <div>
+              <div style={{ fontFamily: fontDi, fontSize: 17, letterSpacing: ".12em", color: S.t1, lineHeight: 1 }}>SALT</div>
+              <div style={{ fontSize: 8, color: S.t3, letterSpacing: ".06em", textTransform: "uppercase", marginTop: 1 }}>Property Development</div>
+            </div>
           </div>
           <nav style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1 }}>
             {NAV.map(function(n) { return <button key={n.id} onClick={function() { go(n.id); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 8, fontSize: 13, fontWeight: 500, color: isA(n.id) ? S.blue : S.t2, background: isA(n.id) ? S.infoBg : "none", border: "none", cursor: "pointer", fontFamily: fontBo }}><n.I s={16} /><span>{n.l}</span></button>; })}
