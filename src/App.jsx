@@ -268,30 +268,55 @@ function useData() {
   }, [load, isMock]);
 
   var addTask = useCallback(async function(pid, sid, task) {
-    var p = prj[pid]; if (!p) return;
-    var d = JSON.parse(JSON.stringify(p.data));
-    if (!d.sections[sid]) d.sections[sid] = { name: sid, tasks: [], consultants: [] };
+    var currentPrj = null;
+    setPrj(function(prev) {
+      currentPrj = prev[pid];
+      return prev;
+    });
+    if (!currentPrj) {
+      /* Project not found - try creating minimal structure */
+      var secNames = {}; DEFAULT_SECTIONS.forEach(function(s) { secNames[s.id] = s.name; });
+      var newSections = {};
+      DEFAULT_SECTIONS.forEach(function(s) { newSections[s.id] = { name: s.name, tasks: [], consultants: [] }; });
+      if (!newSections[sid]) newSections[sid] = { name: secNames[sid] || sid, tasks: [], consultants: [] };
+      newSections[sid].tasks.push(task);
+      var nd = { name: pid, type: "live", milestones: [], sections: newSections };
+      setPrj(function(p) { var n = Object.assign({}, p); n[pid] = { id: pid, data: nd, updated_at: new Date().toISOString() }; return n; });
+      if (!isMock) try { await fetch(SB + "/rest/v1/projects?on_conflict=id", { method: "POST", headers: Object.assign({}, H, { Prefer: "resolution=merge-duplicates,return=representation" }), body: JSON.stringify({ id: pid, data: nd, updated_at: new Date().toISOString() }) }); } catch(e) { load(); }
+      return;
+    }
+    var d = JSON.parse(JSON.stringify(currentPrj.data));
+    if (!d.sections) d.sections = {};
+    if (!d.sections[sid]) {
+      var secNames2 = {}; DEFAULT_SECTIONS.forEach(function(s) { secNames2[s.id] = s.name; });
+      d.sections[sid] = { name: secNames2[sid] || sid, tasks: [], consultants: [] };
+    }
+    if (!d.sections[sid].tasks) d.sections[sid].tasks = [];
     d.sections[sid].tasks.push(task);
     await upd(pid, d);
-  }, [prj, upd]);
+  }, [upd, load, isMock]);
 
   var updTask = useCallback(async function(pid, sid, tid, u) {
-    var p = prj[pid]; if (!p) return;
-    var d = JSON.parse(JSON.stringify(p.data));
+    var currentPrj = null;
+    setPrj(function(prev) { currentPrj = prev[pid]; return prev; });
+    if (!currentPrj) return;
+    var d = JSON.parse(JSON.stringify(currentPrj.data));
     var ts = d.sections && d.sections[sid] && d.sections[sid].tasks;
     if (!ts) return;
     var i = ts.findIndex(function(t) { return t.id === tid; });
     if (i >= 0) { ts[i] = Object.assign({}, ts[i], u); await upd(pid, d); }
-  }, [prj, upd]);
+  }, [upd]);
 
   var delTask = useCallback(async function(pid, sid, tid) {
-    var p = prj[pid]; if (!p) return;
-    var d = JSON.parse(JSON.stringify(p.data));
+    var currentPrj = null;
+    setPrj(function(prev) { currentPrj = prev[pid]; return prev; });
+    if (!currentPrj) return;
+    var d = JSON.parse(JSON.stringify(currentPrj.data));
     if (d.sections && d.sections[sid] && d.sections[sid].tasks) {
       d.sections[sid].tasks = d.sections[sid].tasks.filter(function(t) { return t.id !== tid; });
     }
     await upd(pid, d);
-  }, [prj, upd]);
+  }, [upd]);
 
   return { prj: prj, loading: loading, toasts: toasts, toast: toast, isMock: isMock, load: load, upd: upd, addProj: addProj, delProj: delProj, addTask: addTask, updTask: updTask, delTask: delTask };
 }
@@ -522,17 +547,19 @@ function AddTaskM(props) {
   }
 
   var sub = async function() {
-    if (!f.n.trim() || !f.p || !f.s) return;
+    if (!f.n.trim()) { ctx.toast("Enter a task description", "err"); return; }
+    if (!f.p) { ctx.toast("Select a project", "err"); return; }
+    if (!f.s) { ctx.toast("Select a section", "err"); return; }
     setSav(true);
     try {
       await ctx.addTask(f.p, f.s, { id: uid(), name: f.n.trim(), assignees: f.assignees.length > 0 ? f.assignees : [], assignee: f.assignees.length === 1 ? f.assignees[0] : null, priority: f.pr, dueDate: f.d || null, consultant: f.con || null, stage: "not-started", createdAt: new Date().toISOString() });
       ctx.toast("Task created");
       props.onClose();
-    } catch(e) { ctx.toast("Failed", "err"); }
+    } catch(e) { ctx.toast("Failed: " + (e.message || "Unknown error"), "err"); }
     finally { setSav(false); }
   };
 
-  var canSubmit = f.n.trim() && f.p && f.s;
+  var canSubmit = f.n && f.n.trim() && f.p;
   var assigneeChk = { display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", cursor: "pointer", borderRadius: 6, fontSize: 13 };
 
   /* Auto-select project and section for business */
@@ -584,12 +611,26 @@ function AddTaskM(props) {
       </div>
 
       {/* Project dropdown - hidden for business since auto-selected */}
-      {f.cat && f.cat !== "business" && projectOptions.length > 0 && (
-        <div style={{ marginBottom: 12 }}><label style={lblS}>Project</label><select style={sInput} value={f.p} onChange={function(e) { sF(function(x) { return Object.assign({}, x, { p: e.target.value, s: "", con: "" }); }); }}><option value="">Select project...</option>{projectOptions.map(function(p) { return <option key={p.id} value={p.id}>{p.name}</option>; })}</select></div>
+      {f.cat && f.cat !== "business" && (
+        <div style={{ marginBottom: 12 }}>
+          <label style={lblS}>Project</label>
+          {projectOptions.length > 0 ? (
+            <select style={sInput} value={f.p} onChange={function(e) {
+              var newP = e.target.value;
+              /* Auto-select first section */
+              var proj = ctx.prj[newP];
+              var firstSec = "";
+              if (proj && proj.data && proj.data.sections) { var keys = Object.keys(proj.data.sections); if (keys.length > 0) firstSec = keys[0]; }
+              sF(function(x) { return Object.assign({}, x, { p: newP, s: firstSec, con: "" }); });
+            }}><option value="">Select project...</option>{projectOptions.map(function(p) { return <option key={p.id} value={p.id}>{p.name}</option>; })}</select>
+          ) : (
+            <div style={{ padding: "10px 12px", background: S.warnBg, borderRadius: 8, fontSize: 12, color: S.warn }}>No {f.cat} projects yet. Create one from the Projects page first.</div>
+          )}
+        </div>
       )}
       {f.cat === "business" && <div style={{ marginBottom: 12, padding: "8px 12px", background: S.infoBg, borderRadius: 8, fontSize: 12, color: S.blue }}>Adding to Business Action Items</div>}
 
-      {secs.length > 0 && f.cat !== "business" && <div style={{ marginBottom: 12 }}><label style={lblS}>Section</label><select style={sInput} value={f.s} onChange={function(e) { sF(function(x) { return Object.assign({}, x, { s: e.target.value, con: "" }); }); }}><option value="">Select section...</option>{secs.map(function(s) { return <option key={s.id} value={s.id}>{s.name}</option>; })}</select></div>}
+      {secs.length > 0 && f.cat !== "business" && <div style={{ marginBottom: 12 }}><label style={lblS}>Section</label><select style={sInput} value={f.s} onChange={function(e) { sF(function(x) { return Object.assign({}, x, { s: e.target.value, con: "" }); }); }}><option value="">Select section...</option>{secs.map(function(s) { return <option key={s.id} value={s.id}>{gSecName(s.id, s)}</option>; })}</select></div>}
       {consultants.length > 0 && <div style={{ marginBottom: 12 }}><label style={lblS}>Consultant</label><select style={sInput} value={f.con} onChange={function(e) { sF(function(x) { return Object.assign({}, x, { con: e.target.value }); }); }}><option value="">None</option>{consultants.map(function(c) { return <option key={c.id} value={c.id}>{(c.type ? c.type + ": " : "") + c.name + (c.company ? " (" + c.company + ")" : "")}</option>; })}</select></div>}
       <div style={{ marginBottom: 12 }}>
         <label style={lblS}>Assignees</label>
@@ -697,7 +738,7 @@ function EditTaskM(props) {
     finally { setSav(false); }
   };
 
-  var canSave = f.n && f.n.trim() && f.p && f.s;
+  var canSave = f.n && f.n.trim();
 
   return (
     <Modal open={props.open} onClose={props.onClose} title="Edit Task"
@@ -729,13 +770,26 @@ function EditTaskM(props) {
       </div>
 
       {/* Project */}
-      {f.cat && f.cat !== "business" && projectOptions.length > 0 && (
-        <div style={{ marginBottom: 12 }}><label style={lblS}>Project</label><select style={sInput} value={f.p} onChange={function(e) { sF(function(x) { return Object.assign({}, x, { p: e.target.value, s: "", con: "" }); }); }}><option value="">Select project...</option>{projectOptions.map(function(p) { return <option key={p.id} value={p.id}>{p.name}</option>; })}</select></div>
+      {f.cat && f.cat !== "business" && (
+        <div style={{ marginBottom: 12 }}>
+          <label style={lblS}>Project</label>
+          {projectOptions.length > 0 ? (
+            <select style={sInput} value={f.p} onChange={function(e) {
+              var newP = e.target.value;
+              var proj = ctx.prj[newP];
+              var firstSec = "";
+              if (proj && proj.data && proj.data.sections) { var keys = Object.keys(proj.data.sections); if (keys.length > 0) firstSec = keys[0]; }
+              sF(function(x) { return Object.assign({}, x, { p: newP, s: firstSec, con: "" }); });
+            }}><option value="">Select project...</option>{projectOptions.map(function(p) { return <option key={p.id} value={p.id}>{p.name}</option>; })}</select>
+          ) : (
+            <div style={{ padding: "10px 12px", background: S.warnBg, borderRadius: 8, fontSize: 12, color: S.warn }}>No {f.cat} projects yet.</div>
+          )}
+        </div>
       )}
       {f.cat === "business" && <div style={{ marginBottom: 12, padding: "8px 12px", background: S.infoBg, borderRadius: 8, fontSize: 12, color: S.blue }}>Business Action Items</div>}
 
       {/* Section */}
-      {secs.length > 0 && f.cat !== "business" && <div style={{ marginBottom: 12 }}><label style={lblS}>Section</label><select style={sInput} value={f.s} onChange={function(e) { sF(function(x) { return Object.assign({}, x, { s: e.target.value, con: "" }); }); }}><option value="">Select section...</option>{secs.map(function(s) { return <option key={s.id} value={s.id}>{s.name}</option>; })}</select></div>}
+      {secs.length > 0 && f.cat !== "business" && <div style={{ marginBottom: 12 }}><label style={lblS}>Section</label><select style={sInput} value={f.s} onChange={function(e) { sF(function(x) { return Object.assign({}, x, { s: e.target.value, con: "" }); }); }}><option value="">Select section...</option>{secs.map(function(s) { return <option key={s.id} value={s.id}>{gSecName(s.id, s)}</option>; })}</select></div>}
 
       {/* Consultant */}
       {consultants.length > 0 && <div style={{ marginBottom: 12 }}><label style={lblS}>Consultant</label><select style={sInput} value={f.con || ""} onChange={function(e) { sF(function(x) { return Object.assign({}, x, { con: e.target.value }); }); }}><option value="">None</option>{consultants.map(function(c) { return <option key={c.id} value={c.id}>{(c.type ? c.type + ": " : "") + c.name + (c.company ? " (" + c.company + ")" : "")}</option>; })}</select></div>}
